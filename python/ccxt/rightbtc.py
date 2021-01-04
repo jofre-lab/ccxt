@@ -14,7 +14,7 @@ from ccxt.base.errors import OrderNotFound
 from ccxt.base.decimal_to_precision import ROUND
 
 
-class rightbtc (Exchange):
+class rightbtc(Exchange):
 
     def describe(self):
         return self.deep_extend(super(rightbtc, self).describe(), {
@@ -22,14 +22,21 @@ class rightbtc (Exchange):
             'name': 'RightBTC',
             'countries': ['AE'],
             'has': {
+                'cancelOrder': True,
+                'createOrder': True,
                 'privateAPI': False,
-                'fetchTickers': True,
-                'fetchOHLCV': True,
-                'fetchOrders': True,
-                'fetchOpenOrders': True,
+                'fetchBalance': True,
                 'fetchClosedOrders': False,
-                'fetchOrder': 'emulated',
+                'fetchMarkets': True,
                 'fetchMyTrades': True,
+                'fetchOHLCV': True,
+                'fetchOpenOrders': True,
+                'fetchOrder': 'emulated',
+                'fetchOrderBook': True,
+                'fetchOrders': True,
+                'fetchTicker': True,
+                'fetchTickers': True,
+                'fetchTrades': True,
             },
             'timeframes': {
                 '1m': 'min1',
@@ -41,12 +48,11 @@ class rightbtc (Exchange):
                 '1w': 'week',
             },
             'urls': {
-                'logo': 'https://user-images.githubusercontent.com/1294454/42633917-7d20757e-85ea-11e8-9f53-fffe9fbb7695.jpg',
+                'logo': 'https://user-images.githubusercontent.com/51840849/87182092-1f372700-c2ec-11ea-8f9e-01b4d3ff8941.jpg',
                 'api': 'https://www.rightbtc.com/api',
                 'www': 'https://www.rightbtc.com',
                 'doc': [
-                    'https://52.53.159.206/api/trader/',
-                    'https://support.rightbtc.com/hc/en-us/articles/360012809412',
+                    'https://docs.rightbtc.com/api/',
                 ],
                 # eslint-disable-next-line no-useless-escape
                 # 'fees': 'https://www.rightbtc.com/\#\not /support/fee',
@@ -95,7 +101,7 @@ class rightbtc (Exchange):
                     # 0.01 ETP
                     # 0.001 ETH
                     # 0.1 BITCNY
-                    'maker': 0.2 / 100,
+                    'maker': 0.1 / 100,
                     'taker': 0.2 / 100,
                 },
                 'funding': {
@@ -118,11 +124,11 @@ class rightbtc (Exchange):
                         # 'BitCNY': n => 0.1 + n * (1 / 100),
                         # 'MTX': n => 1 + n * (1 / 100),
                         'ETP': 0.01,
-                        'BTC': 0.001,
-                        'ETH': 0.01,
+                        'BTC': 0.0005,
+                        'ETH': 0.005,
                         'ETC': 0.01,
                         'STORJ': 3,
-                        'LTC': 0.001,
+                        'LTC': 0.01,
                         'ZEC': 0.001,
                         'BCC': 0.001,
                         'XRB': 0,
@@ -245,12 +251,12 @@ class rightbtc (Exchange):
         for i in range(0, len(tickers)):
             ticker = tickers[i]
             id = ticker['market']
-            if not(id in list(self.marketsById.keys())):
+            if not (id in self.marketsById):
                 continue
             market = self.marketsById[id]
             symbol = market['symbol']
             result[symbol] = self.parse_ticker(ticker, market)
-        return result
+        return self.filter_by_array(result, 'symbol', symbols)
 
     def fetch_order_book(self, symbol, limit=None, params={}):
         self.load_markets()
@@ -299,13 +305,8 @@ class rightbtc (Exchange):
         amount = self.safe_float(trade, 'quantity', amount)
         if amount is not None:
             amount = amount / 1e8
-        symbol = None
-        if market is None:
-            marketId = self.safe_string(trade, 'trading_pair')
-            if marketId in self.markets_by_id:
-                market = self.markets_by_id[marketId]
-        if market is not None:
-            symbol = market['symbol']
+        marketId = self.safe_string(trade, 'trading_pair')
+        symbol = self.safe_symbol(marketId, market)
         cost = self.cost_to_precision(symbol, price * amount)
         cost = float(cost)
         side = self.safe_string_lower(trade, 'side')
@@ -338,9 +339,9 @@ class rightbtc (Exchange):
         response = self.publicGetTradesTradingPair(self.extend(request, params))
         return self.parse_trades(response['result'], market, since, limit)
 
-    def parse_ohlcv(self, ohlcv, market=None, timeframe='5m', since=None, limit=None):
+    def parse_ohlcv(self, ohlcv, market=None):
         return [
-            int(ohlcv[0]),
+            self.safe_integer(ohlcv, 0),
             float(ohlcv[2]) / 1e8,
             float(ohlcv[3]) / 1e8,
             float(ohlcv[4]) / 1e8,
@@ -356,7 +357,8 @@ class rightbtc (Exchange):
             'timeSymbol': self.timeframes[timeframe],
         }
         response = self.publicGetCandlestickTimeSymbolTradingPair(self.extend(request, params))
-        return self.parse_ohlcvs(response['result'], market, timeframe, since, limit)
+        result = self.safe_value(response, 'result', [])
+        return self.parse_ohlcvs(result, market, timeframe, since, limit)
 
     def fetch_balance(self, params={}):
         self.load_markets()
@@ -464,12 +466,7 @@ class rightbtc (Exchange):
         id = self.safe_string(order, 'id')
         status = self.parse_order_status(self.safe_string(order, 'status'))
         marketId = self.safe_string(order, 'trading_pair')
-        if market is None:
-            if marketId in self.markets_by_id:
-                market = self.markets_by_id[marketId]
-        symbol = marketId
-        if market is not None:
-            symbol = market['symbol']
+        symbol = self.safe_symbol(marketId, market)
         timestamp = self.safe_integer(order, 'created')
         if timestamp is None:
             timestamp = self.parse8601(self.safe_string(order, 'created_at'))
@@ -509,13 +506,17 @@ class rightbtc (Exchange):
         return {
             'info': order,
             'id': id,
+            'clientOrderId': None,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
             'lastTradeTimestamp': None,
             'symbol': symbol,
             'type': type,
+            'timeInForce': None,
+            'postOnly': None,
             'side': side,
             'price': price,
+            'stopPrice': None,
             'amount': amount,
             'cost': cost,
             'filled': filled,
@@ -523,6 +524,7 @@ class rightbtc (Exchange):
             'status': status,
             'fee': fee,
             'trades': trades,
+            'average': None,
         }
 
     def fetch_order(self, id, symbol=None, params={}):
@@ -556,7 +558,7 @@ class rightbtc (Exchange):
         #
         orders = self.parse_orders(response['result'], market)
         ordersById = self.index_by(orders, 'id')
-        if not(id in list(ordersById.keys())):
+        if not (id in ordersById):
             raise OrderNotFound(self.id + ' fetchOrder could not find order ' + str(id) + ' in open orders.')
         return ordersById[id]
 
@@ -702,8 +704,6 @@ class rightbtc (Exchange):
             success = self.safe_string(status, 'success')
             if success != '1':
                 message = self.safe_string(status, 'message')
-                feedback = self.id + ' ' + self.json(response)
-                exceptions = self.exceptions
-                if message in exceptions:
-                    raise exceptions[message](feedback)
+                feedback = self.id + ' ' + body
+                self.throw_exactly_matched_exception(self.exceptions, message, feedback)
                 raise ExchangeError(feedback)

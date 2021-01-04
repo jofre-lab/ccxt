@@ -4,7 +4,19 @@
 
 const now = Date.now // TODO: figure out how to utilize performance.now () properly – it's not as easy as it does not return a unix timestamp...
 const microseconds = () => now () * 1000 // TODO: utilize performance.now for that purpose
+const milliseconds = now
 const seconds      = () => Math.floor (now () / 1000)
+const uuidv1 = () => {
+    const biasSeconds = 12219292800  // seconds from 15th Oct 1572 to Jan 1st 1970
+    const bias = biasSeconds * 10000000  // in hundreds of nanoseconds
+    const time = microseconds () * 10 + bias
+    const timeHex = time.toString (16)
+    const arranged = timeHex.slice (7, 15) + timeHex.slice (3, 7) + '1' + timeHex.slice (0, 3)
+    // these should be random, but we're not making more than 10 requests per microsecond so who cares
+    const clockId = '9696' // a 14 bit number
+    const macAddress = 'ff'.repeat (6)
+    return arranged + clockId + macAddress
+}
 
 /*  ------------------------------------------------------------------------ */
 
@@ -17,7 +29,7 @@ const setTimeout_safe = (done, ms, setTimeout = setTimeout_original /* overridea
     let clearInnerTimeout = () => {}
     let active = true
 
-    let id = setTimeout (() => {
+    const id = setTimeout (() => {
         active = true
         const rest = targetTime - now ()
         if (rest > 0) {
@@ -52,7 +64,12 @@ class TimedOut extends Error {
 /*  ------------------------------------------------------------------------ */
 
 const iso8601 = (timestamp) => {
-    const _timestampNumber = parseInt (timestamp, 10);
+    let _timestampNumber = undefined;
+    if (typeof timestamp === 'number') {
+        _timestampNumber = Math.floor (timestamp);
+    } else {
+        _timestampNumber = parseInt (timestamp, 10);
+    }
 
     // undefined, null and lots of nasty non-numeric values yield NaN
     if (Number.isNaN (_timestampNumber) || _timestampNumber < 0) {
@@ -109,6 +126,10 @@ const parseDate = (x) => {
     return parse8601 (x);
 }
 
+const rfc2616 = (timestamp = undefined) => {
+    return new Date (timestamp).toUTCString ();
+}
+
 const mdy = (timestamp, infix = '-') => {
     infix = infix || ''
     const date = new Date (timestamp)
@@ -152,9 +173,12 @@ module.exports =
     {
         now
         , microseconds
+        , milliseconds
         , seconds
         , iso8601
         , parse8601
+        , rfc2616
+        , uuidv1
         , parseDate
         , mdy
         , ymd

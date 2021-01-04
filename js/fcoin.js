@@ -3,7 +3,7 @@
 //  ---------------------------------------------------------------------------
 
 const Exchange = require ('./base/Exchange');
-const { BadSymbol, ExchangeError, ExchangeNotAvailable, ArgumentsRequired, InsufficientFunds, InvalidOrder, DDoSProtection, InvalidNonce, AuthenticationError, NotSupported } = require ('./base/errors');
+const { BadSymbol, ExchangeError, ExchangeNotAvailable, ArgumentsRequired, InsufficientFunds, InvalidOrder, RateLimitExceeded, InvalidNonce, AuthenticationError, NotSupported } = require ('./base/errors');
 
 //  ---------------------------------------------------------------------------
 
@@ -20,18 +20,25 @@ module.exports = class fcoin extends Exchange {
             'accountsById': undefined,
             'hostname': 'fcoin.com',
             'has': {
+                'cancelOrder': true,
                 'CORS': false,
+                'createOrder': true,
+                'fetchBalance': true,
+                'fetchClosedOrders': true,
+                'fetchCurrencies': false,
                 'fetchDepositAddress': false,
+                'fetchMarkets': true,
                 'fetchOHLCV': true,
                 'fetchOpenOrders': true,
-                'fetchClosedOrders': true,
                 'fetchOrder': true,
-                'fetchOrders': true,
                 'fetchOrderBook': true,
                 'fetchOrderBooks': false,
+                'fetchOrders': true,
+                'fetchTicker': true,
+                'fetchTime': true,
+                'fetchTrades': true,
                 'fetchTradingLimits': false,
                 'withdraw': false,
-                'fetchCurrencies': false,
             },
             'timeframes': {
                 '1m': 'M1',
@@ -113,8 +120,8 @@ module.exports = class fcoin extends Exchange {
                 'trading': {
                     'tierBased': false,
                     'percentage': true,
-                    'maker': 0.001,
-                    'taker': 0.001,
+                    'maker': -0.0002,
+                    'taker': 0.0003,
                 },
             },
             'limits': {
@@ -143,7 +150,7 @@ module.exports = class fcoin extends Exchange {
                 '400': NotSupported, // Bad Request
                 '401': AuthenticationError,
                 '405': NotSupported,
-                '429': DDoSProtection, // Too Many Requests, exceed api request limit
+                '429': RateLimitExceeded, // Too Many Requests, exceed api request limit
                 '1002': ExchangeNotAvailable, // System busy
                 '1016': InsufficientFunds,
                 '2136': AuthenticationError, // The API key is expired
@@ -375,26 +382,21 @@ module.exports = class fcoin extends Exchange {
             if (tickerType !== undefined) {
                 const parts = tickerType.split ('.');
                 const id = parts[1];
-                if (id in this.markets_by_id) {
-                    market = this.markets_by_id[id];
-                }
+                symbol = this.safeSymbol (id, market);
             }
         }
         const values = ticker['ticker'];
-        const last = parseFloat (values[0]);
-        if (market !== undefined) {
-            symbol = market['symbol'];
-        }
+        const last = this.safeFloat (values, 0);
         return {
             'symbol': symbol,
             'timestamp': timestamp,
             'datetime': this.iso8601 (timestamp),
-            'high': parseFloat (values[7]),
-            'low': parseFloat (values[8]),
-            'bid': parseFloat (values[2]),
-            'bidVolume': parseFloat (values[3]),
-            'ask': parseFloat (values[4]),
-            'askVolume': parseFloat (values[5]),
+            'high': this.safeFloat (values, 7),
+            'low': this.safeFloat (values, 8),
+            'bid': this.safeFloat (values, 2),
+            'bidVolume': this.safeFloat (values, 3),
+            'ask': this.safeFloat (values, 4),
+            'askVolume': this.safeFloat (values, 5),
             'vwap': undefined,
             'open': undefined,
             'close': last,
@@ -403,8 +405,8 @@ module.exports = class fcoin extends Exchange {
             'change': undefined,
             'percentage': undefined,
             'average': undefined,
-            'baseVolume': parseFloat (values[9]),
-            'quoteVolume': parseFloat (values[10]),
+            'baseVolume': this.safeFloat (values, 9),
+            'quoteVolume': this.safeFloat (values, 10),
             'info': ticker,
         };
     }
@@ -443,6 +445,17 @@ module.exports = class fcoin extends Exchange {
         };
     }
 
+    async fetchTime (params = {}) {
+        const response = await this.publicGetServerTime (params);
+        //
+        //     {
+        //         "status": 0,
+        //         "data": 1523430502977
+        //     }
+        //
+        return this.safeInteger (response, 'data');
+    }
+
     async fetchTrades (symbol, since = undefined, limit = 50, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
@@ -458,27 +471,27 @@ module.exports = class fcoin extends Exchange {
     }
 
     async createOrder (symbol, type, side, amount, price = undefined, params = {}) {
-        if (type === 'market') {
-            // for market buy it requires the amount of quote currency to spend
-            if (side === 'buy') {
-                if (this.options['createMarketBuyOrderRequiresPrice']) {
-                    if (price === undefined) {
-                        throw new InvalidOrder (this.id + " createOrder() requires the price argument with market buy orders to calculate total order cost (amount to spend), where cost = amount * price. Supply a price argument to createOrder() call if you want the cost to be calculated for you from price and amount, or, alternatively, add .options['createMarketBuyOrderRequiresPrice'] = false to supply the cost in the amount argument (the exchange-specific behaviour)");
-                    } else {
-                        amount = amount * price;
-                    }
-                }
-            }
-        }
         await this.loadMarkets ();
-        const orderType = type;
         const request = {
             'symbol': this.marketId (symbol),
-            'amount': this.amountToPrecision (symbol, amount),
             'side': side,
-            'type': orderType,
+            'type': type,
         };
-        if (type === 'limit') {
+        // for market buy it requires the amount of quote currency to spend
+        if ((type === 'market') && (side === 'buy')) {
+            if (this.options['createMarketBuyOrderRequiresPrice']) {
+                if (price === undefined) {
+                    throw new InvalidOrder (this.id + " createOrder() requires the price argument with market buy orders to calculate total order cost (amount to spend), where cost = amount * price. Supply a price argument to createOrder() call if you want the cost to be calculated for you from price and amount, or, alternatively, add .options['createMarketBuyOrderRequiresPrice'] = false to supply the cost in the amount argument (the exchange-specific behaviour)");
+                } else {
+                    request['amount'] = this.costToPrecision (symbol, amount * price);
+                }
+            } else {
+                request['amount'] = this.costToPrecision (symbol, amount);
+            }
+        } else {
+            request['amount'] = this.amountToPrecision (symbol, amount);
+        }
+        if ((type === 'limit') || (type === 'ioc') || (type === 'fok')) {
             request['price'] = this.priceToPrecision (symbol, price);
         }
         const response = await this.privatePostOrders (this.extend (request, params));
@@ -514,16 +527,28 @@ module.exports = class fcoin extends Exchange {
     }
 
     parseOrder (order, market = undefined) {
+        //
+        //     {
+        //         "id": "string",
+        //         "symbol": "string",
+        //         "type": "limit",
+        //         "side": "buy",
+        //         "price": "string",
+        //         "amount": "string",
+        //         "state": "submitted",
+        //         "executed_value": "string",
+        //         "fill_fees": "string",
+        //         "filled_amount": "string",
+        //         "created_at": 0,
+        //         "source": "web"
+        //     }
+        //
         const id = this.safeString (order, 'id');
         const side = this.safeString (order, 'side');
         const status = this.parseOrderStatus (this.safeString (order, 'state'));
-        let symbol = undefined;
-        if (market === undefined) {
-            const marketId = this.safeString (order, 'symbol');
-            if (marketId in this.markets_by_id) {
-                market = this.markets_by_id[marketId];
-            }
-        }
+        const marketId = this.safeString (order, 'symbol');
+        market = this.safeMarket (marketId, market);
+        const symbol = market['symbol'];
         const orderType = this.safeString (order, 'type');
         const timestamp = this.safeInteger (order, 'created_at');
         const amount = this.safeFloat (order, 'amount');
@@ -544,21 +569,33 @@ module.exports = class fcoin extends Exchange {
             }
         }
         let feeCurrency = undefined;
-        if (market !== undefined) {
-            symbol = market['symbol'];
-            feeCurrency = (side === 'buy') ? market['base'] : market['quote'];
+        let feeCost = undefined;
+        const feeRebate = this.safeFloat (order, 'fees_income');
+        if ((feeRebate !== undefined) && (feeRebate > 0)) {
+            if (market !== undefined) {
+                feeCurrency = (side === 'buy') ? market['quote'] : market['base'];
+            }
+            feeCost = -feeRebate;
+        } else {
+            feeCost = this.safeFloat (order, 'fill_fees');
+            if (market !== undefined) {
+                feeCurrency = (side === 'buy') ? market['base'] : market['quote'];
+            }
         }
-        const feeCost = this.safeFloat (order, 'fill_fees');
         return {
             'info': order,
             'id': id,
+            'clientOrderId': undefined,
             'timestamp': timestamp,
             'datetime': this.iso8601 (timestamp),
             'lastTradeTimestamp': undefined,
             'symbol': symbol,
             'type': orderType,
+            'timeInForce': undefined,
+            'postOnly': undefined,
             'side': side,
             'price': price,
+            'stopPrice': undefined,
             'cost': cost,
             'amount': amount,
             'remaining': remaining,
@@ -609,7 +646,7 @@ module.exports = class fcoin extends Exchange {
         return this.parseOrders (response['data'], market, since, limit);
     }
 
-    parseOHLCV (ohlcv, market = undefined, timeframe = '1m', since = undefined, limit = undefined) {
+    parseOHLCV (ohlcv, market = undefined) {
         return [
             this.safeTimestamp (ohlcv, 'id'),
             this.safeFloat (ohlcv, 'open'),
@@ -620,19 +657,25 @@ module.exports = class fcoin extends Exchange {
         ];
     }
 
-    async fetchOHLCV (symbol, timeframe = '1m', since = undefined, limit = 100, params = {}) {
+    async fetchOHLCV (symbol, timeframe = '1m', since = undefined, limit = undefined, params = {}) {
         await this.loadMarkets ();
-        if (limit === undefined) {
-            throw new ExchangeError (this.id + ' fetchOHLCV requires a limit argument');
-        }
         const market = this.market (symbol);
+        if (limit === undefined) {
+            limit = 20; // default is 20
+        }
         const request = {
             'symbol': market['id'],
             'timeframe': this.timeframes[timeframe],
             'limit': limit,
         };
+        if (since !== undefined) {
+            const sinceInSeconds = parseInt (since / 1000);
+            const timerange = limit * this.parseTimeframe (timeframe);
+            request['before'] = this.sum (sinceInSeconds, timerange) - 1;
+        }
         const response = await this.marketGetCandlesTimeframeSymbol (this.extend (request, params));
-        return this.parseOHLCVs (response['data'], market, timeframe, since, limit);
+        const data = this.safeValue (response, 'data', []);
+        return this.parseOHLCVs (data, market, timeframe, since, limit);
     }
 
     nonce () {
@@ -669,7 +712,7 @@ module.exports = class fcoin extends Exchange {
                     auth += this.urlencode (query);
                 }
             }
-            const payload = this.stringToBase64 (this.encode (auth));
+            const payload = this.stringToBase64 (auth);
             let signature = this.hmac (payload, this.encode (this.secret), 'sha1', 'binary');
             signature = this.decode (this.stringToBase64 (signature));
             headers = {
@@ -693,10 +736,7 @@ module.exports = class fcoin extends Exchange {
         const status = this.safeString (response, 'status');
         if (status !== '0' && status !== 'ok') {
             const feedback = this.id + ' ' + body;
-            if (status in this.exceptions) {
-                const exceptions = this.exceptions;
-                throw new exceptions[status] (feedback);
-            }
+            this.throwExactlyMatchedException (this.exceptions, status, feedback);
             throw new ExchangeError (feedback);
         }
     }

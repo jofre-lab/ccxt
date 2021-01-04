@@ -4,7 +4,6 @@
 # https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 from ccxt.async_support.base.exchange import Exchange
-import base64
 import hashlib
 from ccxt.base.errors import ExchangeError
 from ccxt.base.errors import AuthenticationError
@@ -15,7 +14,7 @@ from ccxt.base.errors import NotSupported
 from ccxt.base.errors import InvalidNonce
 
 
-class stronghold (Exchange):
+class stronghold(Exchange):
 
     def describe(self):
         return self.deep_extend(super(stronghold, self).describe(), {
@@ -42,19 +41,23 @@ class stronghold (Exchange):
                 'password': True,
             },
             'has': {
-                'fetchMarkets': True,
-                'fetchCurrencies': True,
-                'fetchOrderBook': True,
-                'fetchOpenOrders': True,
-                'fetchTrades': True,
-                'fetchMyTrades': True,
-                'fetchDepositAddress': False,
+                'cancelOrder': True,
                 'createDepositAddress': True,
-                'withdraw': True,
+                'createOrder': True,
+                'fetchAccounts': True,
+                'fetchBalance': True,
+                'fetchDepositAddress': False,
+                'fetchCurrencies': True,
+                'fetchMarkets': True,
+                'fetchMyTrades': True,
+                'fetchOpenOrders': True,
+                'fetchOrderBook': True,
                 'fetchTicker': False,
                 'fetchTickers': False,
-                'fetchAccounts': True,
+                'fetchTime': True,
+                'fetchTrades': True,
                 'fetchTransactions': True,
+                'withdraw': True,
             },
             'api': {
                 'public': {
@@ -140,7 +143,7 @@ class stronghold (Exchange):
     async def get_active_account(self):
         if self.options['accountId'] is not None:
             return self.options['accountId']
-        await self.loadAccounts()
+        await self.load_accounts()
         numAccounts = len(self.accounts)
         if numAccounts > 0:
             return self.accounts[0]['id']
@@ -224,6 +227,7 @@ class stronghold (Exchange):
                 'precision': precision,
                 'info': entry,
                 'limits': limits,
+                'active': None,
             }
         return result
 
@@ -279,6 +283,7 @@ class stronghold (Exchange):
                 'active': None,
                 'name': None,
                 'limits': limits,
+                'fee': None,
             }
         return result
 
@@ -413,7 +418,7 @@ class stronghold (Exchange):
         currency = None
         if code is not None:
             currency = self.currency(code)
-        return self.parseTransactions(response['result'], currency, since, limit)
+        return self.parse_transactions(response['result'], currency, since, limit)
 
     def parse_transaction_status(self, status):
         statuses = {
@@ -548,6 +553,7 @@ class stronghold (Exchange):
                 cost = amount * price
         return {
             'id': id,
+            'clientOrderId': None,
             'info': order,
             'symbol': symbol,
             'datetime': datetime,
@@ -563,6 +569,7 @@ class stronghold (Exchange):
             'status': None,
             'type': None,
             'average': None,
+            'fee': None,
         }
 
     def nonce(self):
@@ -579,7 +586,7 @@ class stronghold (Exchange):
             'venueId': self.options['venueId'],
             'accountId': await self.get_active_account(),
         }, params)
-        if not('accountId' in list(request.keys())):
+        if not ('accountId' in request):
             raise ArgumentsRequired(self.id + " fetchBalance requires either the 'accountId' extra parameter or exchange.options['accountId'] = 'YOUR_ACCOUNT_ID'.")
         response = await self.privateGetVenuesVenueIdAccountsAccountId(request)
         balances = self.safe_value(response['result'], 'balances')
@@ -618,7 +625,7 @@ class stronghold (Exchange):
         request = self.extend({
             'venueId': self.options['venueId'],
             'accountId': await self.get_active_account(),
-            'assetId': self.currencyId(code),
+            'assetId': self.currency_id(code),
             'paymentMethod': paymentMethod,
         }, params)
         if not request['accountId']:
@@ -653,7 +660,7 @@ class stronghold (Exchange):
         request = self.extend({
             'venueId': self.options['venueId'],
             'accountId': await self.get_active_account(),
-            'assetId': self.currencyId(code),
+            'assetId': self.currency_id(code),
             'amount': amount,
             'paymentMethod': paymentMethod,
             'paymentMethodDetails': {
@@ -720,7 +727,7 @@ class stronghold (Exchange):
             payload = timestamp + method + request
             if body is not None:
                 payload += body
-            secret = base64.b64decode(self.secret)
+            secret = self.base64_to_binary(self.secret)
             headers = {
                 'SH-CRED-ID': self.apiKey,
                 'SH-CRED-SIG': self.hmac(self.encode(payload), secret, hashlib.sha256, 'base64'),
